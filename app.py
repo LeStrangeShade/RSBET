@@ -76,6 +76,24 @@ def get_unibet_odds(sport="soccer_netherlands_eredivisie"):
     return data
 
 
+@st.cache_data(ttl=3600)
+def get_top_scorers(league_code="DED"):
+    if not FOOTBALL_API_KEY:
+        return {}
+    url = f"https://api.football-data.org/v4/competitions/{league_code}/scorers"
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
+    res = requests.get(url, headers=headers, timeout=20)
+    if res.status_code != 200:
+        return {}
+    scorer_dict = {}
+    for s in res.json().get("scorers", []):
+        team_name   = s["team"]["name"]
+        player_name = s["player"]["name"]
+        goals       = s.get("numberOfGoals", s.get("goals", 0))
+        scorer_dict[team_name] = {"name": player_name, "goals": goals}
+    return scorer_dict
+
+
 # --- UI ---
 st.title("Eredivisie Smart Bet Analyzer")
 st.markdown("**Bron:** football-data.org (historie) + The Odds API (live Unibet odds)")
@@ -97,14 +115,16 @@ league_code, sport_key = SPORTS_MAP[league]
 
 if run_analyse:
     with st.spinner("Data ophalen en berekenen..."):
-        df_hist   = get_historical_stats(league_code)
-        live_odds = get_unibet_odds(sport_key)
+        df_hist     = get_historical_stats(league_code)
+        live_odds   = get_unibet_odds(sport_key)
+        top_scorers = get_top_scorers(league_code)
 
     if df_hist.empty:
         st.error("Geen historische data geladen. Controleer je FOOTBALL_API_KEY.")
         st.stop()
 
     results = []
+    match_details = []
     for match in live_odds:
         home = match.get("home_team")
         away = match.get("away_team")
@@ -147,6 +167,17 @@ if run_analyse:
             "Max Edge":        max_edge,
             "Beste Bet":       beste_bet,
             "Status":          "VALUE" if max_edge > min_edge else "Geen value",
+        })
+        match_details.append({
+            "home":        home,
+            "away":        away,
+            "probs":       probs,
+            "unibet_home": unibet_home,
+            "unibet_away": unibet_away,
+            "edge_home":   edge_home,
+            "edge_away":   edge_away,
+            "fair_home":   fair_home,
+            "fair_away":   fair_away,
         })
 
     if not results:
@@ -191,14 +222,50 @@ if run_analyse:
                   annotation_text=f"Value drempel ({min_edge:.0%})")
     st.plotly_chart(fig, use_container_width=True)
 
+    st.divider()
+    st.subheader("🔍 Speler Impact per wedstrijd")
+    st.caption("Zet de toggle aan als de topscorer afwezig is. De edge wordt automatisch herberekend (−10%).")
+
+    for md in match_details:
+        h, a = md["home"], md["away"]
+        star_home  = top_scorers.get(h)
+        star_away  = top_scorers.get(a)
+        label_home = f"{star_home['name']} ({star_home['goals']} goals)" if star_home else "Onbekend"
+        label_away = f"{star_away['name']} ({star_away['goals']} goals)" if star_away else "Onbekend"
+
+        with st.expander(f"📋 {h} vs {a}"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown(f"**Topscorer {h}:** {label_home}")
+                missing_home = st.checkbox(
+                    f"Afwezig: {star_home['name'].split()[0] if star_home else 'speler'}?",
+                    key=f"miss_home_{h}",
+                )
+                prob_home = md["probs"]["home"]
+                if missing_home:
+                    prob_home *= 0.90
+                    st.warning(f"Kans thuis verlaagd naar {prob_home:.0%}")
+                adj_fair_home = 1 / prob_home if prob_home > 0 else None
+                adj_edge_home = round((md["unibet_home"] / adj_fair_home) - 1, 3) if adj_fair_home and md["unibet_home"] else 0
+                st.metric("Aangepaste Edge Thuis", f"{adj_edge_home:.1%}", delta=f"{adj_edge_home - md['edge_home']:+.1%}")
+
+            with col2:
+                st.markdown(f"**Topscorer {a}:** {label_away}")
+                missing_away = st.checkbox(
+                    f"Afwezig: {star_away['name'].split()[0] if star_away else 'speler'}?",
+                    key=f"miss_away_{a}",
+                )
+                prob_away = md["probs"]["away"]
+                if missing_away:
+                    prob_away *= 0.90
+                    st.warning(f"Kans uit verlaagd naar {prob_away:.0%}")
+                adj_fair_away = 1 / prob_away if prob_away > 0 else None
+                adj_edge_away = round((md["unibet_away"] / adj_fair_away) - 1, 3) if adj_fair_away and md["unibet_away"] else 0
+                st.metric("Aangepaste Edge Uit", f"{adj_edge_away:.1%}", delta=f"{adj_edge_away - md['edge_away']:+.1%}")
+
     with st.expander("Bekijk historische data"):
         st.dataframe(df_hist.tail(10), use_container_width=True)
 
 else:
     st.info("Selecteer een competitie en klik op **Start Analyse** in de sidebar.")
-
-with st.expander("Speler Impact (squad check)"):
-    st.write("""
-    Via football-data.org /teams/{id} kun je de selectie ophalen.
-    Als een speler met meer dan 5 goals ontbreekt, wordt de winstkans automatisch verlaagd.
-    """)
