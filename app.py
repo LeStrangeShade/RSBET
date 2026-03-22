@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
@@ -48,10 +48,13 @@ st.markdown(
 )
 
 
-LEAGUES = [
-    "soccer_netherlands_eerste_divisie",
-    "soccer_netherlands_eredivisie",
-]
+LEAGUES = {
+    "soccer_netherlands_eredivisie": "Eredivisie",
+    "soccer_netherlands_eerste_divisie": "Keuken Kampioen Divisie",
+    "soccer_epl": "Premier League",
+    "soccer_uefa_champs_league": "Champions League",
+    "soccer_fifa_world_cup": "WK 2026",
+}
 
 
 def safe_parse_dt(value):
@@ -70,8 +73,8 @@ def fetch_all_matches():
     if not api_key:
         return pd.DataFrame()
 
-    for league in LEAGUES:
-        url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
+    for league_key, league_name in LEAGUES.items():
+        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/"
         params = {
             "api_key": api_key,
             "regions": "eu",
@@ -82,10 +85,12 @@ def fetch_all_matches():
 
         try:
             res = requests.get(url, params=params, timeout=20)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            st.error(f"Fout bij laden van {league_name}: {exc}")
             continue
 
         if res.status_code != 200:
+            st.error(f"Fout bij laden van {league_name}: status {res.status_code}")
             continue
 
         for match in res.json():
@@ -111,7 +116,7 @@ def fetch_all_matches():
 
             all_data.append(
                 {
-                    "League": "KKD" if "eerste" in league else "Eredivisie",
+                    "League": league_name,
                     "Match": f"{home} vs {away}",
                     "Home": home,
                     "Odd": home_odd,
@@ -129,9 +134,9 @@ def fetch_all_matches():
     df["DateLabel"] = df["Date"].dt.tz_convert(None).dt.strftime("%d-%m %H:%M")
     df.loc[df["Date"].isna(), "DateLabel"] = "N/A"
 
-    # KKD-focus: dinsdagwedstrijden uit de KKD krijgen prioriteit bovenaan.
-    df["PriorityTuesdayKKD"] = ((df["League"] == "KKD") & (df["Date"].dt.weekday == 1)).astype(int)
-    df["DateSort"] = df["Date"].fillna(pd.Timestamp.max.tz_localize("UTC"))
+    now_utc = pd.Timestamp(datetime.now(timezone.utc))
+    df["DateSort"] = df["Date"].fillna(now_utc + pd.Timedelta(days=3650))
+    df = df.sort_values(by="DateSort", ascending=True).reset_index(drop=True)
 
     return df
 
@@ -142,7 +147,7 @@ st.write("Analyse van aankomende wedstrijden op basis van Smart Data.")
 with st.sidebar:
     st.header("Instellingen")
     min_edge = st.slider("Minimale Edge Filter", -0.1, 0.2, 0.0, step=0.01)
-    st.info("De KKD wedstrijd van dinsdag wordt standaard naar boven gepusht.")
+    st.info("De scan zoekt nu agressief over meerdere competities en sorteert op dichtstbijzijnde starttijd.")
 
 
 if st.button("Scan voor nieuwe kansen (Update Data)"):
@@ -153,8 +158,8 @@ if st.button("Scan voor nieuwe kansen (Update Data)"):
         st.warning("Geen live data kunnen ophalen. Controleer je API-key of bookmaker beschikbaarheid.")
         st.stop()
 
-    # Sorteer: eerst KKD-dinsdag prioriteit, daarna eerstvolgende datum.
-    df = df.sort_values(by=["PriorityTuesdayKKD", "DateSort"], ascending=[False, True]).reset_index(drop=True)
+    # Sorteer op dichtstbijzijnde datum zodat de eerstvolgende wedstrijd bovenaan staat.
+    df = df.sort_values(by=["DateSort"], ascending=[True]).reset_index(drop=True)
 
     # Top adviezen: eerstvolgende 3 wedstrijden met hoogste winstverwachting.
     upcoming = df.copy()
