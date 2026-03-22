@@ -1,0 +1,21 @@
+# Virtuele omgeving
+.venv/
+
+# Streamlit secrets (bevat API keys — NOOIT committen)
+.streamlit/secrets.toml
+
+# Environment variabelen
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# VS Code
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
