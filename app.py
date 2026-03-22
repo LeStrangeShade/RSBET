@@ -25,7 +25,8 @@ def get_data(endpoint, params=None):
         response = requests.get(url, headers=HEADERS, params=params)
         if response.status_code == 200:
             return response.json()
-        st.error(f"API Fout: {response.status_code}")
+        st.error(f"API Fout {response.status_code} op URL: `{url}`")
+        st.code(response.text[:500])  # toon eerste 500 tekens van de foutmelding
         return None
     except Exception as e:
         st.error(f"Verbindingsfout: {e}")
@@ -101,6 +102,24 @@ def fetch_analysis():
 # --- UI LAYOUT ---
 st.title("? Eredivisie Smart Analytics")
 st.markdown("Bron: *Free API Live Football Data* | Analyse op basis van historie & Unibet")
+
+# --- TIJDELIJKE DEBUG: test beschikbare endpoints ---
+if st.button("🔍 Debug: test API verbinding"):
+    test_endpoints = [
+        ("football-get-all-fixtures", {"leagueid": EREDIVISIE_ID, "seasonid": "2025"}),
+        ("football-get-leagues", {}),
+        ("get-leagues", {}),
+        ("leagues", {}),
+    ]
+    for ep, params in test_endpoints:
+        url = f"https://{HOST}/{ep}"
+        r = requests.get(url, headers=HEADERS, params=params)
+        st.write(f"`{ep}` → status **{r.status_code}**")
+        if r.status_code == 200:
+            st.json(r.json())
+            break
+
+st.divider()
 
 if st.button("Analyseer Eredivisie"):
     with st.spinner("Data ophalen en berekenen..."):
