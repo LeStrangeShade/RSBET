@@ -1,5 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 from datetime import datetime, timezone
+import time
 
 import pandas as pd
 import requests
@@ -48,15 +49,6 @@ st.markdown(
 )
 
 
-LEAGUES = {
-    "soccer_netherlands_eredivisie": "Eredivisie",
-    "soccer_netherlands_eerste_divisie": "Keuken Kampioen Divisie",
-    "soccer_epl": "Premier League",
-    "soccer_uefa_champs_league": "Champions League",
-    "soccer_fifa_world_cup": "WK 2026",
-}
-
-
 def safe_parse_dt(value):
     if not value:
         return pd.NaT
@@ -66,15 +58,22 @@ def safe_parse_dt(value):
         return pd.NaT
 
 
-def fetch_all_matches():
+def fetch_optimized_data():
     api_key = st.secrets.get("ODDS_API_KEY", "")
+    leagues = [
+        "soccer_netherlands_eredivisie",
+        "soccer_netherlands_eerste_divisie",
+    ]
     all_data = []
 
     if not api_key:
         return pd.DataFrame()
 
-    for league_key, league_name in LEAGUES.items():
-        url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/"
+    for league in leagues:
+        # Korte pauze om rate limits te vermijden.
+        time.sleep(1)
+
+        url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
         params = {
             "api_key": api_key,
             "regions": "eu",
@@ -86,11 +85,15 @@ def fetch_all_matches():
         try:
             res = requests.get(url, params=params, timeout=20)
         except requests.RequestException as exc:
-            st.error(f"Fout bij laden van {league_name}: {exc}")
+            st.error(f"Fout bij laden van {league}: {exc}")
             continue
 
+        if res.status_code == 429:
+            st.error("API limiet bereikt (429). Wacht 30 seconden en probeer het opnieuw.")
+            break
+
         if res.status_code != 200:
-            st.error(f"Fout bij laden van {league_name}: status {res.status_code}")
+            st.error(f"Fout bij laden van {league}: status {res.status_code}")
             continue
 
         for match in res.json():
@@ -98,7 +101,7 @@ def fetch_all_matches():
             away = match.get("away_team", "N/A")
             commence = match.get("commence_time")
 
-            # No-filter policy: altijd toevoegen, ook als odds incompleet zijn.
+            # Alleen wedstrijden met echte Unibet home odd.
             home_odd = None
             unibet = next((b for b in match.get("bookmakers", []) if b.get("key") == "unibet"), None)
             if unibet and unibet.get("markets"):
@@ -107,16 +110,15 @@ def fetch_all_matches():
                 if home_outcome:
                     home_odd = home_outcome.get("price")
 
-            if home_odd and home_odd > 0:
-                expected_win = (1 / home_odd) * 1.05
-                edge = (expected_win * home_odd) - 1
-            else:
-                expected_win = None
-                edge = None
+            if not home_odd:
+                continue
+
+            expected_win = (1 / home_odd) * 1.05
+            edge = (expected_win * home_odd) - 1
 
             all_data.append(
                 {
-                    "League": league_name,
+                    "League": "Eerste Divisie (KKD)" if "eerste" in league else "Eredivisie",
                     "Match": f"{home} vs {away}",
                     "Home": home,
                     "Odd": home_odd,
@@ -131,12 +133,19 @@ def fetch_all_matches():
         return df
 
     df["Date"] = df["DateRaw"].apply(safe_parse_dt)
+    df = df[df["Date"].notna()]
+    now_utc = pd.Timestamp(datetime.now(timezone.utc))
+    df = df[df["Date"] > now_utc]
+    if df.empty:
+        return df
+
+    # Forceer zichtbaarheid van KKD-wedstrijden op dinsdag.
+    df["PriorityTuesdayKKD"] = ((df["League"] == "Eerste Divisie (KKD)") & (df["Date"].dt.weekday == 1)).astype(int)
     df["DateLabel"] = df["Date"].dt.tz_convert(None).dt.strftime("%d-%m %H:%M")
     df.loc[df["Date"].isna(), "DateLabel"] = "N/A"
 
-    now_utc = pd.Timestamp(datetime.now(timezone.utc))
-    df["DateSort"] = df["Date"].fillna(now_utc + pd.Timedelta(days=3650))
-    df = df.sort_values(by="DateSort", ascending=True).reset_index(drop=True)
+    df["DateSort"] = df["Date"]
+    df = df.sort_values(by=["PriorityTuesdayKKD", "DateSort"], ascending=[False, True]).reset_index(drop=True)
 
     return df
 
@@ -147,19 +156,19 @@ st.write("Analyse van aankomende wedstrijden op basis van Smart Data.")
 with st.sidebar:
     st.header("Instellingen")
     min_edge = st.slider("Minimale Edge Filter", -0.1, 0.2, 0.0, step=0.01)
-    st.info("De scan zoekt nu agressief over meerdere competities en sorteert op dichtstbijzijnde starttijd.")
+    st.info("Slimme scan op Nederland (Eredivisie + KKD) met rate-limit bescherming.")
 
 
-if st.button("Scan voor nieuwe kansen (Update Data)"):
+if st.button("Scan Nederland (Eredivisie & KKD)"):
     with st.spinner("Live odds ophalen..."):
-        df = fetch_all_matches()
+        df = fetch_optimized_data()
 
     if df.empty:
         st.warning("Geen live data kunnen ophalen. Controleer je API-key of bookmaker beschikbaarheid.")
         st.stop()
 
-    # Sorteer op dichtstbijzijnde datum zodat de eerstvolgende wedstrijd bovenaan staat.
-    df = df.sort_values(by=["DateSort"], ascending=[True]).reset_index(drop=True)
+    # Extra bescherming: KKD-dinsdag eerst, daarna dichtstbijzijnde datum.
+    df = df.sort_values(by=["PriorityTuesdayKKD", "DateSort"], ascending=[False, True]).reset_index(drop=True)
 
     # Top adviezen: eerstvolgende 3 wedstrijden met hoogste winstverwachting.
     upcoming = df.copy()
